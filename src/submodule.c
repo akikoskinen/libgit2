@@ -838,8 +838,7 @@ git_submodule_recurse_t git_submodule_set_fetch_recurse_submodules(
 static int submodule_repo_create(
 	git_repository **out,
 	git_repository *parent_repo,
-	const char *path,
-	bool use_gitlink)
+	const char *path)
 {
 	int error = 0;
 	git_buf workdir = GIT_BUF_INIT, repodir = GIT_BUF_INIT;
@@ -850,27 +849,24 @@ static int submodule_repo_create(
 	if (error < 0)
 		goto cleanup;
 
-	initopt.flags = GIT_REPOSITORY_INIT_MKPATH | GIT_REPOSITORY_INIT_NO_REINIT;
+	initopt.workdir_path = workdir.ptr;
 
-	/* New style: sub-repo goes in <repo-dir>/modules/<name>/ with a
-	 * gitlink in the sub-repo workdir directory to that repository
-	 *
-	 * Old style: sub-repo goes directly into repo/<name>/.git/
+	initopt.flags =
+		GIT_REPOSITORY_INIT_MKPATH |
+		GIT_REPOSITORY_INIT_NO_REINIT |
+		GIT_REPOSITORY_INIT_NO_DOTGIT_DIR |
+		GIT_REPOSITORY_INIT_RELATIVE_GITLINK;
+
+	/**
+	 * sub-repo goes in <repo-dir>/modules/<name>/ with a
+	 * gitlink in the sub-repo workdir directory to that repository.
 	 */
-	if (use_gitlink) {
-		error = git_buf_join3(
-			&repodir, '/', git_repository_path(parent_repo), "modules", path);
-		if (error < 0)
-			goto cleanup;
+	error = git_buf_join3(
+		&repodir, '/', git_repository_path(parent_repo), "modules", path);
+	if (error < 0)
+		goto cleanup;
 
-		initopt.workdir_path = workdir.ptr;
-		initopt.flags |=
-			GIT_REPOSITORY_INIT_NO_DOTGIT_DIR |
-			GIT_REPOSITORY_INIT_RELATIVE_GITLINK;
-
-		error = git_repository_init_ext(&subrepo, repodir.ptr, &initopt);
-	} else
-		error = git_repository_init_ext(&subrepo, workdir.ptr, &initopt);
+	error = git_repository_init_ext(&subrepo, repodir.ptr, &initopt);
 
 cleanup:
 	git_buf_free(&workdir);
@@ -890,7 +886,7 @@ static int git_submodule_update_repo_init_cb(
 	GIT_UNUSED(bare);
 	git_submodule *sm = payload;
 
-	return submodule_repo_create(out, sm->repo, path, 1);
+	return submodule_repo_create(out, sm->repo, path);
 }
 
 int git_submodule_do_update(git_submodule *sm, int init, git_submodule_update_options *_update_options)
@@ -983,15 +979,21 @@ int git_submodule_do_update(git_submodule *sm, int init, git_submodule_update_op
 			(error = git_checkout_tree(sub_repo, target_commit, &update_options.checkout_opts)) != 0 ||
 			(error = git_repository_set_head_detached(sub_repo, git_submodule_index_id(sm), update_options.signature, NULL)) < 0)
 			goto done;
+
+		/* Invalidate the wd flags as the workdir has been updated. */
+		sm->flags = sm->flags &
+			~(GIT_SUBMODULE_STATUS_IN_WD |
+		  	GIT_SUBMODULE_STATUS__WD_OID_VALID |
+		  	GIT_SUBMODULE_STATUS__WD_SCANNED);
 	}
 
 done:
-	git_config_free(config);
-	git_repository_free(sub_repo);
-	git_remote_free(remote);
 	git_buf_free(&buf);
-
+	git_config_free(config);
 	git_object_free(target_commit);
+	git_remote_free(remote);
+	git_repository_free(sub_repo);
+
 	return error;
 }
 
